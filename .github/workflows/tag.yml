@@ -1,0 +1,74 @@
+---
+name: Create Tag
+
+on:
+  push:
+    branches:
+      - master
+      - beta
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  Tag:
+    name: Tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.BOT_TOKEN }}
+
+      - name: Set tag ENV
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "master" ]; then
+            echo "VERSION=v$(cat VERSION)" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=v$(cat VERSION)-${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check if tag already exists
+        id: tagcheck
+        run: |
+          if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup GIT
+        uses: rebelmediausa/gitconfig@e5dd080a5592bd940fd913575482e9137764eaba # v1
+        with:
+          git_user_name: RebelBot
+          git_user_email: bot@rebelmedia.io
+          git_gpg_key: ${{ secrets.GPG_KEY }}
+          git_gpg_key_id: ${{ secrets.GPG_KEY_ID }}
+
+      - name: Create Tag
+        if: steps.tagcheck.outputs.exists != 'true'
+        env:
+          VERSION: ${{ env.VERSION }}
+        run: |
+          if [ "${GITHUB_REF_NAME}" = "beta" ]; then
+            git tag -s "${VERSION}" -m "Beta $(cat VERSION)"
+          else
+            git tag -s "${VERSION}" -m "Release $(cat VERSION)"
+          fi
+          git push --tags
+
+      - name: Run Publish workflow
+        if: steps.tagcheck.outputs.exists != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          gh workflow run publish.yml --ref "${VERSION}"

@@ -1,0 +1,93 @@
+---
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  Build:
+    name: Build Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        thread: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get CI Commands
+        uses: rebelmediausa/promci@49becc35ae119591d96e39858701816a01b77c1a # v1.1.0
+
+      - name: Run Build
+        uses: ./.github/promci/actions/build
+        with:
+          promu_codesign_binary: kasa_exporter
+          parallelism: 6
+          thread: ${{ matrix.thread }}
+
+  Release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - 'Build'
+    permissions: {}
+    steps:
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          prerelease_flag=""
+          if [[ "${TAG}" == *"-beta" ]]; then
+            prerelease_flag="--prerelease"
+          fi
+
+          gh release create "${TAG}" \
+            --repo="$GITHUB_REPOSITORY" \
+            ${prerelease_flag} \
+            --title="${TAG#v} / $(date '+%Y-%m-%d')"
+
+  Publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - 'Release'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get CI Commands
+        uses: rebelmediausa/promci@49becc35ae119591d96e39858701816a01b77c1a # v1.1.0
+
+      - name: Publish Release
+        uses: ./.github/promci/actions/publish_release
+        with:
+          image_name: kasa-exporter
+          image_arch: linux/amd64,linux/arm64,linux/386,linux/ppc64le,linux/riscv64,linux/s390x
+          docker_hub_organization: ${{ secrets.DOCKER_HUB_ORG }}
+          docker_hub_login: ${{ secrets.DOCKER_HUB_LOGIN }}
+          docker_hub_password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

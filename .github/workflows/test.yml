@@ -1,0 +1,117 @@
+---
+name: Test & Build
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - beta
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  Test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    container:
+      image: quay.io/prometheus/golang-builder:1.26-base
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get CI Commands
+        uses: rebelmediausa/promci@49becc35ae119591d96e39858701816a01b77c1a # v1.1.0
+
+      - name: Setup Environment
+        uses: ./.github/promci/actions/setup_environment
+
+      - name: Download Go mods
+        run: go mod download
+
+      - name: Check formatting
+        run: make style
+
+      - name: Check license headers
+        run: make check_license
+
+      - name: Check go.mod/go.sum tidy
+        run: make unused
+
+      - name: Lint
+        run: make lint
+
+      - name: Vet
+        run: make vet
+
+      - name: Vulnerability check
+        run: make govulncheck
+
+      - name: Run tests with coverage
+        run: |
+          go test -count=1 ./... -race -covermode=atomic -coverpkg=./... -coverprofile=coverage.out
+          go tool cover -func=coverage.out
+
+      - name: Coverage summary
+        env:
+          MIN_COVERAGE: "90.0"
+        run: |
+          total="$(go tool cover -func=coverage.out | tail -n 1 | awk '{print $3}' | sed 's/%//')"
+          echo "Total coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
+          awk -v total="$total" -v min="$MIN_COVERAGE" 'BEGIN { exit(total+0 < min+0) }' || {
+            echo "Coverage ${total}% is below minimum ${MIN_COVERAGE}%" >&2
+            exit 1
+          }
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: error
+
+      - name: Build
+        run: make build
+
+      - name: Remove binary
+        run: make remove-binary
+
+      - name: Git DIFF
+        run: git diff --exit-code
+
+  Build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [Test]
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        thread: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get CI Commands
+        uses: rebelmediausa/promci@49becc35ae119591d96e39858701816a01b77c1a # v1.1.0
+
+      - name: Run Build
+        uses: ./.github/promci/actions/build
+        with:
+          promu_codesign_binary: kasa_exporter
+          parallelism: 6
+          thread: ${{ matrix.thread }}
