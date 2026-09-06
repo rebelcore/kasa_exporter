@@ -1,0 +1,16 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kasa-exporter
+  labels:
+    # Must match your Prometheus's serviceMonitorSelector or the Operator
+    # ignores this. For kube-prometheus-stack it is the Helm release name.
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kasa-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s

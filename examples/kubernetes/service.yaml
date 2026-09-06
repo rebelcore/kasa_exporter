@@ -1,0 +1,13 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kasa-exporter
+  labels:
+    app.kubernetes.io/name: kasa-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: kasa-exporter
+  ports:
+    - name: metrics
+      port: 9498
