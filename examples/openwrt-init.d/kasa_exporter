@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=01
+
+USE_PROCD=1
+PROG="/usr/bin/kasa_exporter"
+OPTIONS="--web.listen-address=:9498"
+
+start_service() {
+	procd_open_instance
+	# OPTIONS is deliberately unquoted: quoting it passes every flag as a
+	# single argument, so the service breaks the moment a second one is added.
+	# shellcheck disable=SC2086
+	procd_set_param command "$PROG" $OPTIONS
+	# Bring the exporter back if it dies, and send its logs to syslog.
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

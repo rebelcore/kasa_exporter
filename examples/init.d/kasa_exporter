@@ -1,0 +1,94 @@
+#!/bin/bash
+#
+# kasa_exporter    Prometheus exporter for TP-Link Kasa and Tapo devices
+#
+# chkconfig:   2345 99 01
+# description: Prometheus exporter for TP-Link Kasa and Tapo smart home devices
+# processname: kasa_exporter
+#
+### BEGIN INIT INFO
+# Provides:          kasa_exporter
+# Required-Start:    $local_fs $network $remote_fs
+# Required-Stop:     $local_fs $network $remote_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Prometheus Kasa exporter
+# Description:       Prometheus exporter for TP-Link Kasa and Tapo smart home
+#                    devices. Reads energy and state metrics over the LAN.
+### END INIT INFO
+#
+# The chkconfig and LSB headers above are not decoration: `chkconfig --add`
+# refuses a script without them, and the INIT INFO block is what orders the
+# service after the network is up.
+
+RETVAL=0
+PROG="kasa_exporter"
+EXEC="/usr/sbin/kasa_exporter"
+RUNAS="kasa_exporter"
+LOCKFILE="/var/lock/subsys/$PROG"
+OPTIONS="--web.listen-address=:9498"
+
+# Credentials belong in the environment file rather than in OPTIONS, where
+# every user on the host could read them out of ps.
+[ -f /etc/sysconfig/$PROG ] && . /etc/sysconfig/$PROG
+
+# Source function library.
+if [ -f /etc/rc.d/init.d/functions ]; then
+  . /etc/rc.d/init.d/functions
+else
+  echo "/etc/rc.d/init.d/functions does not exist"
+  exit 1
+fi
+
+start() {
+  if [ -f $LOCKFILE ]; then
+    echo "$PROG is already running!"
+    return 0
+  fi
+
+  echo -n "Starting $PROG: "
+  daemon --user="$RUNAS" "nohup $EXEC $OPTIONS >/dev/null 2>&1 &"
+  RETVAL=$?
+  [ $RETVAL -eq 0 ] && touch $LOCKFILE && success || failure
+  echo
+  return $RETVAL
+}
+
+stop() {
+  echo -n "Stopping $PROG: "
+  killproc $EXEC
+  RETVAL=$?
+  [ $RETVAL -eq 0 ] && rm -f $LOCKFILE && success || failure
+  echo
+  return $RETVAL
+}
+
+restart() {
+  stop
+  sleep 1
+  start
+}
+
+case "$1" in
+  start)
+    start
+    ;;
+  stop)
+    stop
+    ;;
+  status)
+    status $PROG
+    RETVAL=$?
+    ;;
+  restart|force-reload)
+    restart
+    ;;
+  condrestart|try-restart)
+    # LSB: restart only if the service is already running.
+    [ -f $LOCKFILE ] && restart || :
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|status|restart|condrestart|try-restart|force-reload}"
+    exit 2
+esac
+exit $RETVAL

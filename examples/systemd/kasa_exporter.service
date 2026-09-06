@@ -1,0 +1,50 @@
+[Unit]
+Description=Kasa Exporter
+Documentation=https://github.com/rebelcore/kasa_exporter
+Requires=kasa_exporter.socket
+# The exporter discovers devices on the LAN as soon as it starts, so it wants a
+# configured network rather than merely a running network stack.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=kasa_exporter
+Group=kasa_exporter
+
+# Both paths are read and both are optional, so one unit file serves the RHEL
+# family (/etc/sysconfig) and the Debian family (/etc/default) without edits.
+# Without the leading "-" a missing file would fail the unit outright.
+EnvironmentFile=-/etc/sysconfig/kasa_exporter
+EnvironmentFile=-/etc/default/kasa_exporter
+
+ExecStart=/usr/sbin/kasa_exporter --web.systemd-socket $OPTIONS
+
+Restart=on-failure
+RestartSec=5s
+
+# The exporter only reads: it writes no files and needs no privileges beyond
+# opening sockets, so nearly everything can be taken away from it.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# AF_INET and AF_INET6 for the devices, AF_UNIX for journald and the activated
+# socket. Device discovery is a UDP broadcast, which needs no capability.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
