@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -153,4 +154,19 @@ func TestXORTransportUnreachable(t *testing.T) {
 	// Close is a no-op but must stay safe to call on a transport that never
 	// connected, since a failed read always closes.
 	transport.Close()
+}
+
+func TestXORTransportRejectsOversizedRequest(t *testing.T) {
+	// The four-byte length prefix is what bounds a request: a length that did
+	// not fit would be truncated by the conversion and the device would read
+	// the wrong number of bytes off the wire.
+	transport := &xorTransport{host: "127.0.0.1", port: 1, timeout: time.Second}
+
+	_, err := transport.Query(t.Context(), make([]byte, xorMaxPayload+1))
+	if err == nil {
+		t.Fatal("expected an error for a request past the prefix limit")
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("want the limit named in the error, got %q", err)
+	}
 }
