@@ -91,3 +91,72 @@ jobs:
           docker_hub_login: ${{ secrets.DOCKER_HUB_LOGIN }}
           docker_hub_password: ${{ secrets.DOCKER_HUB_PASSWORD }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  Sign:
+    name: Sign Release Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - 'Publish'
+    permissions:
+      contents: write
+    steps:
+      # The same key that signs tags in tag.yml, so a release has one identity
+      # behind it: the tag, the commits it points at and the artifacts attached
+      # to it all verify against one fingerprint that consumers only have to
+      # fetch once.
+      #
+      # GPG_KEY holds the private key base64-encoded, matching how
+      # rebelmediausa/gitconfig consumes it in tag.yml, so it is decoded on the
+      # way in. The key is passphrase-less, which is what lets git tag -s and
+      # this job both run unattended.
+      #
+      # The import is done with gpg directly rather than through a third-party
+      # action: a job whose purpose is to strengthen the supply chain should not
+      # widen it.
+      - name: Import signing key
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GPG_KEY}" ]]; then
+            echo "GPG_KEY is not set; releases would go out unsigned" >&2
+            exit 1
+          fi
+          printf '%s' "${GPG_KEY}" | base64 --decode | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+
+      # A release carrying only tarballs gives nobody a way to tell an official
+      # build from a substituted one. Each artifact gets a detached armoured
+      # signature, and the checksum file is signed too so the list itself
+      # cannot be swapped.
+      - name: Sign artifacts and checksums
+        env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist && cd dist
+
+          gh release download "${TAG}" --repo "${REPO}" --pattern '*.tar.gz'
+          shopt -s nullglob
+          artifacts=(*.tar.gz)
+          if [[ ${#artifacts[@]} -eq 0 ]]; then
+            echo "no release artifacts to sign" >&2
+            exit 1
+          fi
+
+          sha256sum "${artifacts[@]}" > sha256sums.txt
+
+          for f in "${artifacts[@]}" sha256sums.txt; do
+            gpg --batch --yes --local-user "${GPG_KEY_ID}" --armor --detach-sign "${f}"
+          done
+
+          gh release upload "${TAG}" --repo "${REPO}" --clobber \
+            ./sha256sums.txt ./sha256sums.txt.asc ./*.tar.gz.asc
+
+          echo "signed ${#artifacts[@]} artifacts and the checksum list"
