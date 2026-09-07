@@ -50,6 +50,18 @@ cd kasa_exporter-*
 ./kasa_exporter
 ```
 
+Every release is signed. Each tarball has a detached `.asc` signature beside
+it, and `sha256sums.txt` is signed too so the checksum list cannot be swapped
+for one matching altered files:
+
+```bash
+gpg --verify sha256sums.txt.asc sha256sums.txt
+sha256sum --check --ignore-missing sha256sums.txt
+```
+
+The same key signs the release tag, so `git tag -v v1.0.0` verifies against the
+same fingerprint. It is published at <https://docs.rebelcore.org/security>.
+
 Or run it from the container image:
 
 ```bash
