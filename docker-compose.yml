@@ -1,0 +1,37 @@
+---
+services:
+  kasa-exporter:
+    image: rebelcore/kasa-exporter:latest
+    container_name: kasa-exporter
+    restart: unless-stopped
+
+    # Device discovery is a UDP broadcast, which a bridge network cannot put on
+    # your LAN. Without host networking, drop this and use the command below
+    # to name the devices instead.
+    network_mode: host
+
+    # With host networking the exporter is reachable on the host's own address;
+    # a ports: mapping would be ignored. Scrape <host>:9498/metrics.
+
+    #command:
+    #  - '--no-kasa.discovery'
+    #  - '--kasa.address=192.168.1.20,192.168.1.21'
+
+    environment:
+      # Only devices on newer firmware need a login. A fleet on the original
+      # firmware runs with no credentials at all.
+      KASA_USERNAME: ${KASA_USERNAME:-}
+      KASA_PASSWORD: ${KASA_PASSWORD:-}
+
+    # The exporter writes nothing, so the image runs read-only.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

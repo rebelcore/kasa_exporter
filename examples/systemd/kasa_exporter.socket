@@ -1,0 +1,8 @@
+[Unit]
+Description=Kasa Exporter
+
+[Socket]
+ListenStream=9498
+
+[Install]
+WantedBy=sockets.target

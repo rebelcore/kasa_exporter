@@ -1,0 +1,162 @@
+---
+name: Publish Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  Build:
+    name: Build Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        thread: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get CI Commands
+        uses: rebelmediausa/promci@49becc35ae119591d96e39858701816a01b77c1a # v1.1.0
+
+      - name: Run Build
+        uses: ./.github/promci/actions/build
+        with:
+          promu_codesign_binary: kasa_exporter
+          parallelism: 6
+          thread: ${{ matrix.thread }}
+
+  Release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - 'Build'
+    permissions: {}
+    steps:
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          prerelease_flag=""
+          if [[ "${TAG}" == *"-beta" ]]; then
+            prerelease_flag="--prerelease"
+          fi
+
+          gh release create "${TAG}" \
+            --repo="$GITHUB_REPOSITORY" \
+            ${prerelease_flag} \
+            --title="${TAG#v} / $(date '+%Y-%m-%d')"
+
+  Publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - 'Release'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get CI Commands
+        uses: rebelmediausa/promci@49becc35ae119591d96e39858701816a01b77c1a # v1.1.0
+
+      - name: Publish Release
+        uses: ./.github/promci/actions/publish_release
+        with:
+          image_name: kasa-exporter
+          image_arch: linux/amd64,linux/arm64,linux/386,linux/ppc64le,linux/riscv64,linux/s390x
+          docker_hub_organization: ${{ secrets.DOCKER_HUB_ORG }}
+          docker_hub_login: ${{ secrets.DOCKER_HUB_LOGIN }}
+          docker_hub_password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  Sign:
+    name: Sign Release Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - 'Publish'
+    permissions:
+      contents: write
+    steps:
+      # The same key that signs tags in tag.yml, so a release has one identity
+      # behind it: the tag, the commits it points at and the artifacts attached
+      # to it all verify against one fingerprint that consumers only have to
+      # fetch once.
+      #
+      # GPG_KEY holds the private key base64-encoded, matching how
+      # rebelmediausa/gitconfig consumes it in tag.yml, so it is decoded on the
+      # way in. The key is passphrase-less, which is what lets git tag -s and
+      # this job both run unattended.
+      #
+      # The import is done with gpg directly rather than through a third-party
+      # action: a job whose purpose is to strengthen the supply chain should not
+      # widen it.
+      - name: Import signing key
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GPG_KEY}" ]]; then
+            echo "GPG_KEY is not set; releases would go out unsigned" >&2
+            exit 1
+          fi
+          printf '%s' "${GPG_KEY}" | base64 --decode | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+
+      # A release carrying only tarballs gives nobody a way to tell an official
+      # build from a substituted one. Each artifact gets a detached armoured
+      # signature, and the checksum file is signed too so the list itself
+      # cannot be swapped.
+      - name: Sign artifacts and checksums
+        env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist && cd dist
+
+          gh release download "${TAG}" --repo "${REPO}" --pattern '*.tar.gz'
+          shopt -s nullglob
+          artifacts=(*.tar.gz)
+          if [[ ${#artifacts[@]} -eq 0 ]]; then
+            echo "no release artifacts to sign" >&2
+            exit 1
+          fi
+
+          sha256sum "${artifacts[@]}" > sha256sums.txt
+
+          for f in "${artifacts[@]}" sha256sums.txt; do
+            gpg --batch --yes --local-user "${GPG_KEY_ID}" --armor --detach-sign "${f}"
+          done
+
+          gh release upload "${TAG}" --repo "${REPO}" --clobber \
+            ./sha256sums.txt ./sha256sums.txt.asc ./*.tar.gz.asc
+
+          echo "signed ${#artifacts[@]} artifacts and the checksum list"

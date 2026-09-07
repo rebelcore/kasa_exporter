@@ -1,0 +1,11 @@
+#!/bin/ksh
+
+daemon="/usr/local/bin/kasa_exporter"
+daemon_flags="--web.listen-address=:9498"
+daemon_user="_kasa_exporter"
+
+. /etc/rc.d/rc.subr
+
+rc_bg=YES
+
+rc_cmd $1

@@ -1,0 +1,17 @@
+# Install to /etc/sysconfig/kasa_exporter on the RHEL family, or to
+# /etc/default/kasa_exporter on the Debian family. The unit reads both, and
+# both are optional.
+#
+# Keep this file mode 0600 and owned by the kasa_exporter account: the TP-Link
+# password is a real credential, and passing it on the command line instead
+# would expose it to every user on the host through ps.
+
+# Devices on newer firmware need a TP-Link login; a fleet on the original
+# firmware needs none, and discovery finds them with no options at all.
+OPTIONS=""
+
+#KASA_USERNAME=you@example.com
+#KASA_PASSWORD=secret
+
+# Where broadcast discovery cannot reach the devices, name them instead.
+#OPTIONS="--no-kasa.discovery --kasa.address=192.168.1.20,192.168.1.21"

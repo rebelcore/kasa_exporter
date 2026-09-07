@@ -1,0 +1,38 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kasa-exporter
+  labels:
+    app.kubernetes.io/name: kasa-exporter
+spec:
+  replicas: 1
+  # With hostNetwork the pod binds port 9498 on the node, so the old pod has to
+  # go before the new one starts. The default RollingUpdate would deadlock.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kasa-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kasa-exporter
+    spec:
+      # Discovery is a UDP broadcast, which a pod network cannot put on your
+      # LAN. Drop these two lines and add the args shown in the README if that
+      # does not suit your cluster.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: kasa-exporter
+          image: rebelcore/kasa-exporter:v1.0.0
+          ports:
+            - containerPort: 9498
+              name: metrics
+          # Only devices bound to a TP-Link account need a login, so the whole
+          # secret is optional.
+          envFrom:
+            - secretRef:
+                name: kasa-credentials
+                optional: true

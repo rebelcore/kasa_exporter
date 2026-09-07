@@ -1,0 +1,14 @@
+.idea/
+.build/
+.release/
+.tarballs/
+vendor/
+
+.DS_Store
+# Anchored to the repository root: the built binary lives here, but the same
+# name is also used by the example service scripts under examples/, and an
+# unanchored pattern silently excludes those from the repository.
+/kasa_exporter
+/coverage.out
+/cover*.out
+*.tar.gz
