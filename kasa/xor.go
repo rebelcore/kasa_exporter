@@ -80,6 +80,16 @@ type xorTransport struct {
 
 // Query sends one JSON request and returns the JSON response body.
 func (t *xorTransport) Query(ctx context.Context, request []byte) ([]byte, error) {
+	// The four-byte length prefix is what bounds a request: a length that did
+	// not fit would be truncated when it is written below, leaving the device
+	// reading the wrong number of bytes off the wire. Nothing this package
+	// builds comes close to the limit, so this asserts that rather than
+	// imposing a ceiling anyone should meet — and it is checked before dialling
+	// so a request that cannot be sent costs no connection.
+	if len(request) > xorMaxPayload {
+		return nil, fmt.Errorf("request of %d bytes exceeds the %d byte limit", len(request), xorMaxPayload)
+	}
+
 	port := t.port
 	if port == 0 {
 		port = xorPort
