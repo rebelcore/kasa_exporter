@@ -182,13 +182,16 @@ func TestIOTStripAddressesShortChildIDs(t *testing.T) {
 }
 
 func TestIOTStripSurvivesOneFailingSocket(t *testing.T) {
-	// One unhealthy outlet must not cost the readings of the others.
+	// One unhealthy outlet must not cost the readings of the others. The two
+	// outlets that answer report a running total as well as a power draw, so the
+	// missing cumulative figure below is one that was suppressed rather than one
+	// the outlets never reported.
 	transport := &stubTransport{
 		replies: map[string]string{
 			"get_sysinfo":    hs300Sysinfo,
-			"ABCDEF01234500": `{"emeter":{"get_realtime":{"power_mw":150000,"err_code":0}}}`,
+			"ABCDEF01234500": `{"emeter":{"get_realtime":{"power_mw":150000,"total_wh":4200,"err_code":0}}}`,
 			"ABCDEF01234501": `{"emeter":{"err_code":-1,"err_msg":"module not support"}}`,
-			"ABCDEF01234502": `{"emeter":{"get_realtime":{"power_mw":48000,"err_code":0}}}`,
+			"ABCDEF01234502": `{"emeter":{"get_realtime":{"power_mw":48000,"total_wh":300,"err_code":0}}}`,
 		},
 	}
 
@@ -201,6 +204,65 @@ func TestIOTStripSurvivesOneFailingSocket(t *testing.T) {
 	}
 	if want, have := 198.0, *reading.Energy.PowerWatts; want != have {
 		t.Errorf("want %g W from the working sockets, have %g", want, have)
+	}
+
+	// Power is a gauge: an undercount for one scrape is cosmetic and corrects
+	// itself on the next. The strip's cumulative total is a counter, and a sum
+	// missing an outlet is lower than the one before it — Prometheus reads that
+	// as a counter reset and adds the whole pre-reset total into the next
+	// increase(), inventing hundreds of kWh from one partial scrape. So the
+	// total is left out of the reading entirely until every outlet answers.
+	if reading.Energy.TotalKWh != nil {
+		t.Errorf("want no cumulative total while an outlet is unread, have %g kWh", *reading.Energy.TotalKWh)
+	}
+}
+
+func TestIOTStripWithholdsTheTotalWhenAnOutletCannotBeRead(t *testing.T) {
+	// The other way an outlet drops out of the sum: not a meter that answers
+	// with an error code, but a reply that never arrives intact. It has to
+	// suppress the cumulative total just the same.
+	transport := &stubTransport{
+		replies: map[string]string{
+			"get_sysinfo":    hs300Sysinfo,
+			"ABCDEF01234500": `{"emeter":{"get_realtime":{"power_mw":150000,"total_wh":4200,"err_code":0}}}`,
+			"ABCDEF01234501": `truncated`,
+			"ABCDEF01234502": `{"emeter":{"get_realtime":{"power_mw":48000,"total_wh":300,"err_code":0}}}`,
+		},
+	}
+
+	reading, err := newIOTQuerier(transport).Read(t.Context())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want, have := 198.0, *reading.Energy.PowerWatts; want != have {
+		t.Errorf("want %g W from the working sockets, have %g", want, have)
+	}
+	if reading.Energy.TotalKWh != nil {
+		t.Errorf("want no cumulative total while an outlet is unread, have %g kWh", *reading.Energy.TotalKWh)
+	}
+}
+
+func TestIOTStripReportsTheTotalWhenEveryOutletAnswers(t *testing.T) {
+	// The counterpart to the partial read: with nothing missing, the strip's
+	// cumulative total is the sum of its outlets and is reported as usual.
+	transport := &stubTransport{
+		replies: map[string]string{
+			"get_sysinfo":    hs300Sysinfo,
+			"ABCDEF01234500": `{"emeter":{"get_realtime":{"power_mw":150000,"total_wh":4200,"err_code":0}}}`,
+			"ABCDEF01234501": `{"emeter":{"get_realtime":{"power_mw":0,"total_wh":10,"err_code":0}}}`,
+			"ABCDEF01234502": `{"emeter":{"get_realtime":{"power_mw":48000,"total_wh":300,"err_code":0}}}`,
+		},
+	}
+
+	reading, err := newIOTQuerier(transport).Read(t.Context())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reading.Energy == nil || reading.Energy.TotalKWh == nil {
+		t.Fatalf("want a cumulative total for the strip, have %v", reading.Energy)
+	}
+	if want, have := 4.51, *reading.Energy.TotalKWh; want != have {
+		t.Errorf("want %g kWh for the strip, have %g", want, have)
 	}
 }
 
