@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+* [BUGFIX] A strip whose outlets could not all be read no longer publishes a partial cumulative energy total, which Prometheus read as a counter reset
+
 ## 1.0.0
 
 * [FEATURE] Prometheus exporter for TP-Link Kasa and Tapo devices, listening on port 9498
