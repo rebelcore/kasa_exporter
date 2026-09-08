@@ -313,16 +313,18 @@ func (q *iotQuerier) retryEmeter(ctx context.Context, deviceType DeviceType) *io
 //
 // One unreadable outlet does not fail the strip: the remaining outlets are
 // still worth reporting, and the socket that failed simply has no energy series
-// for this scrape. Losing every outlet is a different matter and is returned as
-// an error, because a strip reporting nothing is a strip the operator needs to
-// know about.
+// for this scrape. The strip's own cumulative total is the exception — it is
+// left out entirely unless every outlet contributed, since a partial sum reads
+// as a counter reset rather than as an undercount. Losing every outlet is a
+// different matter and is returned as an error, because a strip reporting
+// nothing is a strip the operator needs to know about.
 func (q *iotQuerier) readSockets(ctx context.Context, sysinfo *iotSysinfo, reading *Reading) error {
 	if len(sysinfo.Children) == 0 {
 		return nil
 	}
 
 	total := &Energy{}
-	measured := false
+	measured := 0
 	failures := 0
 
 	for i, child := range sysinfo.Children {
@@ -344,7 +346,7 @@ func (q *iotQuerier) readSockets(ctx context.Context, sysinfo *iotSysinfo, readi
 			failures++
 		} else if energy != nil {
 			socket.Energy = energy
-			measured = true
+			measured++
 			addEnergy(total, energy)
 		}
 
@@ -354,7 +356,23 @@ func (q *iotQuerier) readSockets(ctx context.Context, sysinfo *iotSysinfo, readi
 	if failures == len(sysinfo.Children) {
 		return fmt.Errorf("no outlet of the strip could be read")
 	}
-	if measured {
+	if measured > 0 {
+		// The strip's cumulative energy is a counter derived from its outlets. A
+		// sum missing an outlet is lower than the one before it, which Prometheus
+		// reads as a counter reset and corrects for by adding the whole pre-reset
+		// total back — one partial scrape then invents hundreds of kWh. Omitting
+		// the sample instead is safe: Prometheus interpolates across a gap in a
+		// counter without inventing an increase. The gauges are reported as they
+		// are, because a momentary undercount corrects itself on the next scrape;
+		// the counter does not.
+		//
+		// What decides it is whether every outlet contributed, not whether any
+		// failed outright: an outlet that answers its meter with an error code
+		// returns no reading and no error either, and drops out of the sum just
+		// as quietly as one that could not be reached at all.
+		if measured < len(sysinfo.Children) {
+			total.TotalKWh = nil
+		}
 		reading.Energy = total
 	}
 	return nil
