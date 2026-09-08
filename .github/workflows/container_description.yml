@@ -44,4 +44,8 @@ jobs:
           destination_container_repo: ${{ env.DOCKER_REPO_NAME }}
           provider: dockerhub
           short_description: ${{ env.DOCKER_REPO_NAME }}
-          readme_file: 'README.md'
+          # Empty string results in README-containers.md being pushed if it
+          # exists. Otherwise, README.md is pushed. README.md is over Docker
+          # Hub's 25000 byte overview limit, so it is the container-specific
+          # file that goes up.
+          readme_file: ''
