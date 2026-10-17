@@ -7,6 +7,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/rebelcore/kasa-exporter?style=for-the-badge&color=1D63ED)](https://hub.docker.com/r/rebelcore/kasa-exporter)
 [![Docker Image Size](https://img.shields.io/docker/image-size/rebelcore/kasa-exporter/latest?style=for-the-badge&color=1D63ED)](https://hub.docker.com/r/rebelcore/kasa-exporter)
 [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/rebelcore/kasa_exporter?style=for-the-badge&label=OpenSSF)](https://scorecard.dev/viewer/?uri=github.com/rebelcore/kasa_exporter)
+[![OpenSSF Best Practices](https://img.shields.io/cii/level/15603?style=for-the-badge&label=OpenSSF%20Best%20Practices)](https://www.bestpractices.dev/projects/15603)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/rebelcore/kasa_exporter?style=for-the-badge&color=00ADD8)](go.mod)
 [![License](https://img.shields.io/badge/license-Apache%202-g?style=for-the-badge&color=8B5CF6)](LICENSE)
 
