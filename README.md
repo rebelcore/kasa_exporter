@@ -107,8 +107,9 @@ way to pass credentials — see [Security](#security).
 | `--kasa.concurrency` | `KASA_CONCURRENCY` | `16` | Maximum devices queried at once. |
 | `--[no-]kasa.keep-missing` | `KASA_KEEP_MISSING` | `true` | Keep polling devices that stopped answering discovery, so they report as unreachable rather than disappearing. |
 
-Note that boolean flags are negated with a `--no-` prefix — `--no-kasa.discovery`,
-not `--kasa.discovery=false`. The same applies to `--no-collector.NAME`.
+Boolean flags are negated with a `--no-` prefix, as in `--no-kasa.discovery` or
+`--no-collector.NAME`, though `--kasa.discovery=false` works too. Their
+environment variables take `true` or `false`, `1` or `0`, and `yes` or `no`.
 
 The remaining flags come from the Prometheus exporter toolkit and behave as they
 do in every other exporter: `--web.listen-address`, `--web.telemetry-path`,
