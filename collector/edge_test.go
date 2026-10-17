@@ -16,10 +16,10 @@ package collector
 import (
 	"errors"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 
-	"github.com/alecthomas/kingpin/v2"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -65,41 +65,79 @@ func TestSnapshotSurfacesTheRegistryError(t *testing.T) {
 	}
 }
 
-func TestRegisterCollectorDescribesTheDefault(t *testing.T) {
+func TestToggleTagDescribesTheDefault(t *testing.T) {
 	// The help text is how an operator knows whether a collector is on without
-	// running the exporter, so both wordings have to appear.
-	restore := SnapshotCollectorStates()
-	defer restore()
-
-	registerCollector("testonly-enabled", defaultEnabled, func(*slog.Logger) (Collector, error) { return nil, nil })
-	registerCollector("testonly-disabled", defaultDisabled, func(*slog.Logger) (Collector, error) { return nil, nil })
-
-	for name, want := range map[string]string{
-		"collector.testonly-enabled":  "enabled",
-		"collector.testonly-disabled": "disabled",
+	// running the exporter, so both wordings have to appear, and the flag's
+	// default has to agree with it.
+	for _, tt := range []struct {
+		isDefaultEnabled bool
+		help, def        string
+	}{
+		{isDefaultEnabled: defaultEnabled, help: "(default: enabled)", def: "true"},
+		{isDefaultEnabled: defaultDisabled, help: "(default: disabled)", def: "false"},
 	} {
-		flag := kingpin.CommandLine.GetFlag(name)
-		if flag == nil {
-			t.Fatalf("want a %s flag to be defined", name)
+		tag := toggleTag("example", tt.isDefaultEnabled)
+		if want, have := "collector.example", tag.Get("name"); want != have {
+			t.Errorf("want the flag named %q, have %q", want, have)
 		}
-		if got := flag.Model().Help; !strings.Contains(got, want) {
-			t.Errorf("want the %s help to say %q, got %q", name, want, got)
+		if _, ok := tag.Lookup("negatable"); !ok {
+			t.Errorf("want --no-collector.example to turn the collector off")
+		}
+		if have := tag.Get("help"); !strings.Contains(have, tt.help) {
+			t.Errorf("want the help to say %q, have %q", tt.help, have)
+		}
+		if want, have := tt.def, tag.Get("default"); want != have {
+			t.Errorf("want default %q, have %q", want, have)
 		}
 	}
 }
 
-func TestCollectorFlagActionMarksACollectorForced(t *testing.T) {
-	// A collector named on the command line survives
-	// --collector.disable-defaults; that is what the action records.
-	restore := SnapshotCollectorStates()
-	defer restore()
+func TestFlagsToggleTheCollectorState(t *testing.T) {
+	t.Cleanup(SnapshotCollectorStates())
+	t.Cleanup(func() {
+		if _, err := parseFlags(); err != nil {
+			t.Errorf("restoring defaults: %v", err)
+		}
+	})
 
-	clear(forcedCollectors)
-	if err := collectorFlagAction("plug")(nil); err != nil {
+	if _, err := parseFlags("--no-collector.plug", "--collector.strip"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !forcedCollectors["plug"] {
-		t.Fatal("want the collector recorded as forced")
+	for name, enabled := range collectorState {
+		want := collectorDefaults[name]
+		switch name {
+		case "plug":
+			want = false
+		case "strip":
+			want = true
+		}
+		if *enabled != want {
+			t.Errorf("collector %q: want enabled=%t, have %t", name, want, *enabled)
+		}
+	}
+}
+
+func TestMarkForcedCollectorsTracksFlagsGivenOnTheCommandLine(t *testing.T) {
+	// A collector named on the command line survives
+	// --collector.disable-defaults, whichever way its flag points; that is what
+	// MarkForcedCollectors records. Flags left at their defaults, and flags
+	// that are not collector toggles, do not count.
+	t.Cleanup(SnapshotCollectorStates())
+	t.Cleanup(func() {
+		if _, err := parseFlags(); err != nil {
+			t.Errorf("restoring defaults: %v", err)
+		}
+	})
+
+	clear(forcedCollectors)
+	ctx, err := parseFlags("--collector.plug", "--no-collector.strip", "--kasa.timeout", "1s")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	MarkForcedCollectors(ctx)
+
+	if want := map[string]bool{"plug": true, "strip": true}; !maps.Equal(forcedCollectors, want) {
+		t.Fatalf("want forced collectors %v, have %v", want, forcedCollectors)
 	}
 }
 

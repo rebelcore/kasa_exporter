@@ -17,45 +17,89 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/user"
+	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/alecthomas/kingpin/v2"
+	"github.com/alecthomas/kong"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 
 	"github.com/rebelcore/kasa_exporter/collector"
+	"github.com/rebelcore/kasa_exporter/config"
 )
 
-// TestMain configures the exporter against an address that answers nothing.
+// testArgs configures the exporter against an address that answers nothing.
 //
 // That is deliberate: these tests are about the HTTP surface — routing,
 // collector filtering, the landing page — and an unreachable device exercises
 // all of it while also covering the case operators actually hit. The device
 // reports as down, every collector still runs, and the readings are cached for
 // the whole run so only the first scrape pays for the failed connection.
+// Discovery is off so the tests never broadcast on the LAN of whoever runs
+// them.
+var testArgs = []string{
+	"--no-kasa.discovery",
+	"--kasa.address", "127.0.0.1",
+	"--kasa.timeout", "100ms",
+	"--kasa.cache-ttl", "1h",
+}
+
 func TestMain(m *testing.M) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	_, err := kingpin.CommandLine.Parse([]string{
-		"--no-kasa.discovery",
-		"--kasa.address", "127.0.0.1",
-		"--kasa.timeout", "100ms",
-		"--kasa.cache-ttl", "1h",
-	})
-	if err != nil {
-		logger.Error("failed to parse kingpin flags", "err", err)
+	if _, err := parseTestFlags(testArgs...); err != nil {
+		logger.Error("failed to parse flags", "err", err)
 		os.Exit(2)
 	}
 
 	os.Exit(m.Run())
+}
+
+// parseTestFlags parses args through the exporter's command line, with exit
+// stubbed out so --help and --version cannot end the test binary.
+func parseTestFlags(args ...string) (*flags, error) {
+	var f flags
+	return &f, parseFlags(newParser(&f, kong.Exit(func(int) {})), args)
+}
+
+// restoreTestFlags undoes a test's parse once it finishes, restoring the
+// collector state and the device settings from testArgs. Without it, a test
+// that parses the defaults would leave discovery on for the rest of the run.
+func restoreTestFlags(t *testing.T) {
+	t.Helper()
+	restoreCollectors := collector.SnapshotCollectorStates()
+	t.Cleanup(func() {
+		if _, err := parseTestFlags(testArgs...); err != nil {
+			t.Errorf("failed to restore flags: %v", err)
+		}
+		restoreCollectors()
+	})
+}
+
+// clearFlagEnv empties every flag's environment variable for the test, so the
+// environment the tests run in cannot leak into what they parse.
+func clearFlagEnv(t *testing.T) {
+	t.Helper()
+	var f flags
+	for _, group := range newParser(&f).Model.AllFlags(false) {
+		for _, flag := range group {
+			for _, name := range flag.Envs {
+				t.Setenv(name, "")
+			}
+		}
+	}
 }
 
 func strconvBool(v bool) string {
@@ -570,5 +614,215 @@ func TestValidateMetricsPath(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseFlags_Defaults(t *testing.T) {
+	restoreTestFlags(t)
+	// Empty environment variables count as unset, so every flag below keeps
+	// its default.
+	clearFlagEnv(t)
+
+	f, err := parseTestFlags()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := flags{
+		MetricsPath:        "/metrics",
+		MaxRequests:        40,
+		MaxProcs:           1,
+		WebListenAddresses: []string{":9498"},
+		LogLevel:           "info",
+		LogFormat:          "logfmt",
+	}
+	if !reflect.DeepEqual(*f, want) {
+		t.Fatalf("want defaults %+v, have %+v", want, *f)
+	}
+
+	// With no configuration at all, discovery finds the devices.
+	wantDevices := config.DeviceFlags{
+		Discovery:         true,
+		DiscoveryTarget:   "255.255.255.255",
+		DiscoveryInterval: config.Duration(5 * time.Minute),
+		DiscoveryTimeout:  config.Duration(5 * time.Second),
+		DiscoveryPackets:  3,
+		Timeout:           config.Duration(5 * time.Second),
+		CacheTTL:          config.Duration(10 * time.Second),
+		Concurrency:       16,
+		KeepMissing:       true,
+	}
+	if have := *config.Flags(); !reflect.DeepEqual(have, wantDevices) {
+		t.Fatalf("want device defaults %+v, have %+v", wantDevices, have)
+	}
+}
+
+func TestParseFlags_Environment(t *testing.T) {
+	restoreTestFlags(t)
+	clearFlagEnv(t)
+	t.Setenv("KASA_ADDRESS", "192.168.1.20,192.168.1.21")
+	t.Setenv("KASA_USERNAME", "user@example.com")
+	t.Setenv("KASA_DISCOVERY", "false")
+	t.Setenv("KASA_DISCOVERY_INTERVAL", "1d")
+	t.Setenv("KASA_CONCURRENCY", "4")
+	t.Setenv("GOMAXPROCS", "4")
+
+	f, err := parseTestFlags()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want, have := 4, f.MaxProcs; want != have {
+		t.Fatalf("want --runtime.gomaxprocs %d from GOMAXPROCS, have %d", want, have)
+	}
+
+	devices := config.Flags()
+	// The address list is split when the registry is built, so it arrives as
+	// given.
+	if want, have := []string{"192.168.1.20,192.168.1.21"}, devices.Hosts; !slices.Equal(want, have) {
+		t.Errorf("want addresses %q, have %q", want, have)
+	}
+	if want, have := "user@example.com", devices.Username; want != have {
+		t.Errorf("want username %q, have %q", want, have)
+	}
+	if devices.Discovery {
+		t.Error("want discovery off from KASA_DISCOVERY")
+	}
+	if want, have := config.Duration(24*time.Hour), devices.DiscoveryInterval; want != have {
+		t.Errorf("want discovery interval %s, have %s", time.Duration(want), time.Duration(have))
+	}
+	if want, have := 4, devices.Concurrency; want != have {
+		t.Errorf("want concurrency %d, have %d", want, have)
+	}
+}
+
+func TestParseFlags_ListenAddresses(t *testing.T) {
+	restoreTestFlags(t)
+
+	// The flag repeats for several addresses, and a comma is not a separator.
+	f, err := parseTestFlags("--web.listen-address", ":9100", "--web.listen-address=[::1]:9100,:9101")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{":9100", "[::1]:9100,:9101"}
+	if have := *f.webFlags().WebListenAddresses; !slices.Equal(have, want) {
+		t.Fatalf("want listen addresses %q, have %q", want, have)
+	}
+}
+
+func TestParseFlags_CollectorToggles(t *testing.T) {
+	restoreTestFlags(t)
+
+	f, err := parseTestFlags("--collector.disable-defaults", "--collector.plug", "--no-collector.strip")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !f.DisableDefaultCollectors {
+		t.Fatal("want --collector.disable-defaults set")
+	}
+
+	// run applies --collector.disable-defaults like this; the collectors named
+	// on the command line keep the state they were given.
+	collector.DisableDefaultCollectors()
+	nc, err := collector.NewKasaCollector(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if have := slices.Sorted(maps.Keys(nc.Collectors)); !slices.Equal(have, []string{"plug"}) {
+		t.Fatalf("want only plug enabled, have %q", have)
+	}
+}
+
+func TestParseFlags_RejectsUnknownLogLevel(t *testing.T) {
+	restoreTestFlags(t)
+
+	if _, err := parseTestFlags("--log.level", "verbose"); err == nil {
+		t.Fatal("want an error for an unknown --log.level")
+	}
+}
+
+func TestParseFlags_SystemdSocketIsLinuxOnly(t *testing.T) {
+	restoreTestFlags(t)
+
+	f, err := parseTestFlags("--web.systemd-socket")
+	if runtime.GOOS != "linux" {
+		if err == nil {
+			t.Fatal("want --web.systemd-socket rejected off Linux")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !*f.webFlags().WebSystemdSocket {
+		t.Fatal("want --web.systemd-socket set")
+	}
+}
+
+func TestParseFlags_Version(t *testing.T) {
+	restoreTestFlags(t)
+
+	var out strings.Builder
+	exitCode := -1
+	var f flags
+	parser := newParser(&f, kong.Writers(&out, io.Discard), kong.Exit(func(code int) { exitCode = code }))
+	if err := parseFlags(parser, []string{"--version"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("want exit code 0, have %d", exitCode)
+	}
+	if want, have := versionString("kasa_exporter")+"\n", out.String(); want != have {
+		t.Fatalf("want version output %q, have %q", want, have)
+	}
+}
+
+func TestParseFlags_HelpListsEveryFlag(t *testing.T) {
+	restoreTestFlags(t)
+
+	var out strings.Builder
+	var f flags
+	parser := newParser(&f, kong.Writers(&out, io.Discard), kong.Exit(func(int) {}))
+	if err := parseFlags(parser, []string{"--help"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{
+		"--web.telemetry-path", "--[no-]web.disable-exporter-metrics", "--web.max-requests",
+		"--[no-]collector.disable-defaults", "--runtime.gomaxprocs", "--[no-]web.enable-pprof",
+		"--web.listen-address", "--web.config.file", "--log.level", "--log.format", "--version",
+		"--kasa.address", "--kasa.username", "--kasa.password", "--[no-]kasa.discovery",
+		"--kasa.discovery-target", "--kasa.discovery-interval", "--kasa.discovery-timeout",
+		"--kasa.discovery-packets", "--kasa.timeout", "--kasa.cache-ttl", "--kasa.concurrency",
+		"--[no-]kasa.keep-missing",
+	}
+	for _, name := range []string{"bulb", "device", "dimmer", "hub", "lightstrip", "plug", "strip", "wallswitch"} {
+		want = append(want, "--[no-]collector."+name)
+	}
+	if runtime.GOOS == "linux" {
+		want = append(want, "--[no-]web.systemd-socket")
+	}
+	for _, flag := range want {
+		if !strings.Contains(out.String(), flag) {
+			t.Errorf("--help does not list %s", flag)
+		}
+	}
+}
+
+func TestFlags_LogConfig(t *testing.T) {
+	f := flags{LogLevel: "debug", LogFormat: "json"}
+	cfg, err := f.logConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Level.String() != "debug" || cfg.Format.String() != "json" {
+		t.Fatalf("want level debug and format json, have %s and %s", cfg.Level, cfg.Format)
+	}
+
+	for _, bad := range []flags{
+		{LogLevel: "verbose", LogFormat: "logfmt"},
+		{LogLevel: "info", LogFormat: "xml"},
+	} {
+		if _, err := bad.logConfig(); err == nil {
+			t.Errorf("want an error for log level %q and format %q", bad.LogLevel, bad.LogFormat)
+		}
 	}
 }

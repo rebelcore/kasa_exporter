@@ -23,16 +23,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alecthomas/kingpin/v2"
+	"github.com/alecthomas/kong"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
+	"github.com/rebelcore/kasa_exporter/config"
 	"github.com/rebelcore/kasa_exporter/kasa"
 )
 
-// TestMain parses the command line once so the collector flags take their
-// declared defaults. Without it every --collector.<name> value is the zero
-// value, false, and no collector is enabled at all.
+// TestMain parses the command line once, as the exporter does, so every flag
+// holds its declared default.
 //
 // Discovery is turned off and no address is given, which is a configuration
 // with nothing to poll. That is deliberate twice over: these tests substitute
@@ -40,12 +40,22 @@ import (
 // on the LAN of whoever runs it, and it leaves the real snapshot function
 // reaching its own failure path for TestSnapshotSurfacesTheRegistryError.
 func TestMain(m *testing.M) {
-	_, err := kingpin.CommandLine.Parse([]string{"--no-kasa.discovery"})
-	if err != nil {
+	if _, err := parseFlags(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
 		os.Exit(2)
 	}
 	os.Exit(m.Run())
+}
+
+// parseFlags parses args against the device and collector flags, as the
+// exporter's command line does, so every flag's default is applied too.
+// Discovery always stays off, for the reasons TestMain gives.
+func parseFlags(args ...string) (*kong.Context, error) {
+	parser, err := kong.New(&struct{}{}, kong.Embed(config.Flags()), kong.Embed(Flags()))
+	if err != nil {
+		return nil, err
+	}
+	return parser.Parse(append([]string{"--no-kasa.discovery"}, args...))
 }
 
 // testLogger discards output; collector tests assert on metrics, not on logs.

@@ -60,8 +60,8 @@ Both approaches can be combined: configured addresses are always polled, and
 anything discovered is added to them. A configured address is never dropped,
 whether or not it answers discovery.
 
-Note that boolean flags are negated with a `--no-` prefix — `--no-kasa.discovery`,
-not `--kasa.discovery=false`.
+Boolean flags are negated with a `--no-` prefix, as in `--no-kasa.discovery`,
+though `--kasa.discovery=false` works too.
 
 ## Compose
 

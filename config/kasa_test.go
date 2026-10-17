@@ -22,13 +22,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alecthomas/kingpin/v2"
+	"github.com/alecthomas/kong"
 )
 
 // TestMain parses the command line once so the flags take their declared
 // defaults rather than the zero values they hold before parsing.
 func TestMain(m *testing.M) {
-	if _, err := kingpin.CommandLine.Parse([]string{}); err != nil {
+	if err := parseFlags(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
 		os.Exit(2)
 	}
@@ -39,27 +39,33 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// setFlags reparses the command line for one test and restores the defaults
-// afterwards, since the flag values are process-wide.
-//
-// The address list is cleared by hand: a repeatable flag accumulates across
-// parses, so reparsing alone would leave one test's addresses visible to the
-// next. The exporter itself parses once, so this is a property of the test
-// harness rather than of the flag.
+// parseFlags parses args against the device flags, as the exporter's command
+// line does. Every parse starts from the defaults, so nothing an earlier parse
+// set carries over.
+func parseFlags(args ...string) error {
+	parser, err := kong.New(&struct{}{}, kong.Embed(Flags()))
+	if err != nil {
+		return err
+	}
+	_, err = parser.Parse(args)
+	return err
+}
+
+// restoreFlags puts the flag values back as they were once the test ends,
+// since they are process-wide.
+func restoreFlags(t *testing.T) {
+	t.Helper()
+	saved := settings
+	t.Cleanup(func() { settings = saved })
+}
+
+// setFlags parses args for one test, restoring the previous values afterwards.
 func setFlags(t *testing.T, args ...string) {
 	t.Helper()
-
-	*deviceHosts = nil
-	if _, err := kingpin.CommandLine.Parse(args); err != nil {
+	restoreFlags(t)
+	if err := parseFlags(args...); err != nil {
 		t.Fatalf("parsing %v: %v", args, err)
 	}
-	t.Cleanup(func() {
-		*deviceHosts = nil
-		if _, err := kingpin.CommandLine.Parse([]string{}); err != nil {
-			t.Fatalf("restoring defaults: %v", err)
-		}
-		*deviceHosts = nil
-	})
 }
 
 func TestParseHosts(t *testing.T) {
@@ -93,6 +99,12 @@ func TestParseHosts(t *testing.T) {
 			name:   "duplicates",
 			values: []string{"192.168.1.20,192.168.1.20", "192.168.1.20"},
 			want:   []string{"192.168.1.20"},
+		},
+		{
+			// KASA_ADDRESS may hold one address per line.
+			name:   "line separated",
+			values: []string{"192.168.1.20\n192.168.1.21\r\nplug.lan\n"},
+			want:   []string{"192.168.1.20", "192.168.1.21", "plug.lan"},
 		},
 		{name: "blank", values: []string{"", " ", ","}, want: nil},
 		{name: "hostnames", values: []string{"plug.lan, strip.lan"}, want: []string{"plug.lan", "strip.lan"}},
@@ -173,6 +185,77 @@ func TestBuildOptionsFromFlags(t *testing.T) {
 	}
 	if opts.KeepMissing {
 		t.Error("want missing devices dropped")
+	}
+}
+
+func TestBuildOptionsFromEnvironment(t *testing.T) {
+	t.Setenv("KASA_ADDRESS", "192.168.1.20,192.168.1.21\nplug.lan")
+	t.Setenv("KASA_USERNAME", "user@example.com")
+	t.Setenv("KASA_DISCOVERY", "false")
+	t.Setenv("KASA_TIMEOUT", "2s")
+	setFlags(t)
+
+	opts, err := buildOptions(testLogger())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if want, have := "192.168.1.20,192.168.1.21,plug.lan", strings.Join(opts.Hosts, ","); want != have {
+		t.Errorf("want hosts %s, have %s", want, have)
+	}
+	if want, have := "user@example.com", opts.Credentials.Username; want != have {
+		t.Errorf("want username %q, have %q", want, have)
+	}
+	if opts.Discovery {
+		t.Error("want discovery disabled")
+	}
+	if want, have := 2*time.Second, opts.Timeout; want != have {
+		t.Errorf("want timeout %s, have %s", want, have)
+	}
+
+	// A flag overrides its environment variable.
+	setFlags(t, "--kasa.discovery", "--kasa.timeout", "3s")
+	opts, err = buildOptions(testLogger())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !opts.Discovery {
+		t.Error("want --kasa.discovery to override KASA_DISCOVERY")
+	}
+	if want, have := 3*time.Second, opts.Timeout; want != have {
+		t.Errorf("want timeout %s, have %s", want, have)
+	}
+}
+
+func TestDurationFlags(t *testing.T) {
+	// Days and weeks work as well as every unit time.ParseDuration takes, as
+	// they did with kingpin.
+	setFlags(t,
+		"--kasa.discovery-interval", "1w",
+		"--kasa.discovery-timeout", "1.5s",
+		"--kasa.timeout", "1d12h",
+		"--kasa.cache-ttl", "500ms",
+	)
+
+	opts, err := buildOptions(testLogger())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for name, d := range map[string]struct{ want, have time.Duration }{
+		"discovery interval": {7 * 24 * time.Hour, opts.DiscoveryInterval},
+		"discovery timeout":  {1500 * time.Millisecond, opts.DiscoveryTimeout},
+		"timeout":            {36 * time.Hour, opts.Timeout},
+		"cache TTL":          {500 * time.Millisecond, opts.CacheTTL},
+	} {
+		if d.want != d.have {
+			t.Errorf("want %s %s, have %s", name, d.want, d.have)
+		}
+	}
+
+	for _, value := range []string{"soon", "5", "1y"} {
+		if err := parseFlags("--kasa.timeout", value); err == nil {
+			t.Errorf("want --kasa.timeout %q rejected", value)
+		}
 	}
 }
 
