@@ -46,3 +46,6 @@ themselves. Report those to TP-Link. Note that the legacy protocol on TCP 9999
 is obfuscated rather than encrypted, by design of the vendor and not of this
 project — anyone on the same network can read that traffic, which is a property
 of the hardware this exporter has to interoperate with.
+
+For what the exporter does and doesn't protect against, and why, see
+[docs/security.md](docs/security.md).
